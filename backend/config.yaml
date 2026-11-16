@@ -1,0 +1,27 @@
+chunking:
+  target_words: 400
+  overlap_words: 75
+  max_words: 500
+retrieval:
+  mode: hybrid
+  bm25_top_k: 1000
+  faiss_top_k: 1000
+  rrf_k: 60
+  rerank_enabled: true
+  rerank_input_limit: 200
+  rerank_top_k: 50
+  context_top_k: 8
+  min_dense_score: 0.25
+generation:
+  temperature: 0.2
+  max_output_tokens: 1500
+  timeout_seconds: 60
+  gemini_thinking_level: minimal
+translation:
+  enabled: true
+  normalize_to_english: true
+  translate_documents: false
+guardrails:
+  enforce_farming_scope: true
+  verify_citations: true
+  semantic_verification: true
