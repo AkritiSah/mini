@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pymongo.errors import PyMongoError
 from src.application import Application
 from src.settings import Settings, load_config
@@ -15,13 +16,20 @@ def create_app(application=None):
     @asynccontextmanager
     async def lifespan(app):
         try:
-            app.state.services.initialize()
+            await run_in_threadpool(app.state.services.initialize)
         except Exception:
             logging.getLogger('krishi').warning('MongoDB unavailable; API will retry on subsequent requests.')
-        yield
-        app.state.services.close()
+        try:
+            yield
+        finally:
+            await run_in_threadpool(app.state.services.close)
 
     app = FastAPI(title='Krishi Mitra', version='1.0.0', lifespan=lifespan)
+
+    @app.get('/', include_in_schema=False)
+    def backend_home():
+        return RedirectResponse(url='/docs')
+
     app.state.services = application or Application(Settings(), load_config())
     app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
                        allow_methods=['GET', 'POST', 'DELETE'], allow_headers=['Content-Type'])

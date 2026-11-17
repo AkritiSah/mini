@@ -31,67 +31,82 @@ def test_citations_and_language():
     assert not validate_answer('Use compost [1]', [{}], 'ne')[0]
 
 
-def test_claude_first_gemini_fallback(monkeypatch):
-    settings = Settings(_env_file=None, anthropic_api_key='test', anthropic_model='test-model', gemini_api_key='test')
-    llm = LLMClient(settings, {'temperature': .2, 'max_output_tokens': 500})
-    claude, gemini = Mock(return_value='primary'), Mock(return_value='fallback')
-    monkeypatch.setattr(llm, '_claude', claude); monkeypatch.setattr(llm, '_gemini', gemini)
-    assert llm.complete('prompt', 'system').provider == 'anthropic'
-    gemini.assert_not_called()
-    claude.side_effect = RuntimeError('private-key')
-    result = llm.complete('prompt', 'system')
-    assert result.provider == 'gemini' and result.model == 'gemini-3.6-flash'
-    gemini.assert_called_with('prompt', 'system', 500)
-    gemini.return_value = ''
-    with pytest.raises(LLMUnavailable):
-        llm.complete('prompt', 'system')
-
-
-def test_gemini_sdk_preserves_prompt_and_config(monkeypatch):
+def test_gemini_sdk_preserves_prompt_and_reuses_client(monkeypatch):
     from google import genai
     from unittest.mock import MagicMock
     settings = Settings(_env_file=None, gemini_api_key='test')
     constructor = MagicMock()
-    client = constructor.return_value.__enter__.return_value
-    client.models.generate_content.return_value.text = 'answer'
+    sdk = constructor.return_value
+    sdk.models.generate_content.return_value.text = 'answer'
     monkeypatch.setattr(genai, 'Client', constructor)
-    llm = LLMClient(settings, {'temperature': .2, 'max_output_tokens': 500,
+    llm = LLMClient(settings, {'max_output_tokens': 500,
                               'timeout_seconds': 60, 'gemini_thinking_level': 'minimal'})
-    assert llm._gemini('question and evidence', 'grounding rules', 200) == 'answer'
-    kwargs = client.models.generate_content.call_args.kwargs
-    assert kwargs['model'] == 'gemini-3.6-flash'
+    llm.initialize()
+    llm.initialize()
+    assert llm.complete('question and evidence', 'grounding rules', 200).text == 'answer'
+    assert llm.complete('next question', 'grounding rules', 100).provider == 'gemini'
+    constructor.assert_called_once()
+    sdk.models.get.assert_called_once()
+    assert sdk.models.get.call_args.kwargs['config'].http_options.timeout == 10000
+    assert sdk.models.generate_content.call_count == 2
+    kwargs = sdk.models.generate_content.call_args_list[0].kwargs
+    assert kwargs['model'] == 'gemini-3.1-flash-lite'
     assert kwargs['contents'] == 'question and evidence'
     assert kwargs['config'].system_instruction == 'grounding rules'
     assert kwargs['config'].max_output_tokens == 200
+    assert kwargs['config'].temperature is None
     assert kwargs['config'].thinking_config.thinking_level.value == 'MINIMAL'
+    options = constructor.call_args.kwargs['http_options']
+    assert options.timeout == 60000
+    assert options.retry_options.attempts == 1
+    sdk.close.assert_not_called()
+    llm.close()
+    llm.close()
+    sdk.close.assert_called_once()
+    with pytest.raises(LLMUnavailable, match='closed'):
+        llm._gemini('question', 'system', 100)
 
 
-def test_real_anthropic_sdk_request_serialization(monkeypatch):
-    import anthropic
-    import json
-    try:
-        import httpx2 as transport_module
-    except ImportError:
-        import httpx as transport_module
-    original = anthropic.Anthropic
-    requests = []
+def test_concurrent_startup_only_checks_connection_once(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from google import genai
+    from unittest.mock import MagicMock
+    constructor = MagicMock()
+    monkeypatch.setattr(genai, 'Client', constructor)
+    llm = LLMClient(Settings(_env_file=None, gemini_api_key='test'), {})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: llm.initialize(), range(8)))
+    constructor.assert_called_once()
+    constructor.return_value.models.get.assert_called_once()
+    assert llm.connection_status == 'ready'
+    llm.close()
 
-    def respond(request):
-        requests.append(json.loads(request.content))
-        return transport_module.Response(200, json={
-            'id': 'msg_test', 'type': 'message', 'role': 'assistant', 'model': 'test-model',
-            'content': [{'type': 'text', 'text': 'grounded answer'}],
-            'stop_reason': 'end_turn', 'stop_sequence': None,
-            'usage': {'input_tokens': 1, 'output_tokens': 1}})
 
-    def client_factory(**kwargs):
-        return original(**kwargs, http_client=transport_module.Client(
-            transport=transport_module.MockTransport(respond)))
+def test_failed_startup_connection_can_recover_without_recreating_client(monkeypatch):
+    from google import genai
+    from unittest.mock import MagicMock
+    constructor = MagicMock()
+    sdk = constructor.return_value
+    sdk.models.get.side_effect = ConnectionResetError(10054, 'private endpoint')
+    sdk.models.generate_content.return_value.text = 'recovered'
+    monkeypatch.setattr(genai, 'Client', constructor)
+    llm = LLMClient(Settings(_env_file=None, gemini_api_key='test'), {'max_output_tokens': 100})
+    llm.initialize()
+    assert llm.connection_status == 'unavailable'
+    assert llm.complete('prompt', 'system').text == 'recovered'
+    llm.initialize()
+    assert llm.connection_status == 'ready'
+    sdk.models.get.assert_called_once()
+    constructor.assert_called_once()
+    llm.close()
 
-    monkeypatch.setattr(anthropic, 'Anthropic', client_factory)
-    settings = Settings(_env_file=None, anthropic_api_key='test', anthropic_model='test-model')
-    llm = LLMClient(settings, {'temperature': .2})
-    assert llm._claude('evidence and question', 'grounding instructions', 200) == 'grounded answer'
-    assert requests[0]['messages'] == [{'role': 'user', 'content': 'evidence and question'}]
-    assert requests[0]['system'] == 'grounding instructions'
-    assert requests[0]['max_tokens'] == 200
+
+def test_missing_key_does_not_construct_client(monkeypatch):
+    from google import genai
+    constructor = Mock()
+    monkeypatch.setattr(genai, 'Client', constructor)
+    llm = LLMClient(Settings(_env_file=None, gemini_api_key=''), {})
+    llm.initialize()
+    with pytest.raises(LLMUnavailable, match='GEMINI_API_KEY'):
+        llm.complete('prompt', 'system')
+    constructor.assert_not_called()

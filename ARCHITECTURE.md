@@ -16,7 +16,7 @@ flowchart TD
     BM25 --> RRF[Reciprocal rank fusion]
     FAISS --> RRF
     RRF --> Rerank[Cross-encoder / evidence selection]
-    Rerank --> LLM[Claude, then Gemini 3.6 Flash fallback]
+    Rerank --> LLM[Gemini with shared HTTP client]
     LLM --> Audit[Citation checks / evidence and organic audit]
     Audit --> Answer[Answer, language, citations, research metadata]
     Answer --> UI
@@ -33,7 +33,7 @@ flowchart TD
 | backend/src/vectordb | FAISS persistence, checksum, manifest, mappings |
 | backend/src/retrieval | BM25, dense search, RRF, cross-encoder |
 | backend/src/translation | Script/style detection and English normalization |
-| backend/src/llm | Official Anthropic and Google SDKs with fallback |
+| backend/src/llm | Google GenAI SDK; startup connection check and shared client |
 | backend/src/guardrails | Scope, citation validation, optional semantic audit |
 | backend/src/api | Pydantic input/output schemas and all API endpoints |
 | frontend/src/services | Centralized API URLs, requests, errors |

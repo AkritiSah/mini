@@ -28,4 +28,3 @@ class Translator:
         if detect_language(completion.text) == 'ne':
             raise ValueError('Translation did not produce English. Please retry or upload an English document.')
         return completion.text, language
-t

@@ -53,8 +53,8 @@ def health(request: Request):
     return JSONResponse(status_code=200 if ready else 503, content={
         'status': 'ready' if ready else 'degraded', 'mongodb': mongo,
         'index_ready': app.index_ready, 'llm_configured': app.settings.llm_ready,
-        'providers': {'claude': bool(app.settings.anthropic_api_key and app.settings.anthropic_model),
-                      'gemini': bool(app.settings.gemini_api_key)},
+        'providers': {'gemini': app.settings.llm_ready},
+        'llm_connection': getattr(app.llm, 'connection_status', 'not_checked'),
         'embedding_model': app.settings.embedding_model,
         'embedding_loaded': app.embedder.model is not None,
         'reranker_loaded': app.reranker.model is not None,

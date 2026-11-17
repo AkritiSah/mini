@@ -77,6 +77,24 @@ def test_forged_citation_is_not_returned(client, application, monkeypatch):
     assert answer['evidence_status'] == 'insufficient' and answer['citations'] == []
 
 
+def test_health_reads_cached_gemini_connection_without_rechecking(client, application, monkeypatch):
+    from unittest.mock import MagicMock
+    from google import genai
+    from src.llm.llm_client import LLMClient
+    from src.settings import Settings
+    constructor = MagicMock()
+    monkeypatch.setattr(genai, 'Client', constructor)
+    llm = LLMClient(Settings(_env_file=None, gemini_api_key='test'), {})
+    application.llm = llm
+    llm.initialize()
+    for _ in range(3):
+        response = client.get('/api/health')
+        assert response.json()['llm_connection'] == 'ready'
+        assert set(response.json()['providers']) == {'gemini'}
+    constructor.return_value.models.get.assert_called_once()
+    constructor.return_value.models.generate_content.assert_not_called()
+
+
 def test_interrupted_ingestion_recovers_as_failed(application):
     application.repo.db.documents.insert_one({'_id': 'interrupted', 'status': 'processing', 'file_hash': 'abc'})
     application.repo.db.chunks.insert_one({'_id': 'orphan', 'document_id': 'interrupted'})

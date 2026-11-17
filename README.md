@@ -1,8 +1,9 @@
 # Krishi Mitra
 
 A local multilingual, evidence-grounded organic farming assistant for Sikkim.
-FastAPI + React/Vite + MongoDB + persistent FAISS + BM25 + reciprocal rank fusion
-+ cross-encoder reranking. Claude is primary; **Gemini 3.6 Flash** is the fallback.
+FastAPI + React/Vite + MongoDB with BM25 retrieval by default. Persistent FAISS,
+reciprocal rank fusion, and cross-encoder reranking are available through configuration.
+Gemini is the only LLM provider, configured with `GEMINI_MODEL`.
 
 ## Start on Windows
 
@@ -29,6 +30,10 @@ Press Ctrl+C in the launching terminal to stop the processes it started.
 - Interactive API documentation: http://127.0.0.1:8000/docs
 - Readiness: http://127.0.0.1:8000/api/health
 
+Opening the backend's main URL redirects to the interactive API documentation.
+The chat interface is available at the frontend URL. After editing backend code,
+restart the launcher with Ctrl+C followed by `./run.ps1` to load the changes.
+
 If PowerShell execution policy blocks scripts, run this invocation:
 
 ```powershell
@@ -44,26 +49,26 @@ Edit [backend/.env](backend/.env), using [backend/.env.example](backend/.env.exa
 Keep all API keys on the backend. Never put keys in frontend variables.
 
 ```dotenv
-ANTHROPIC_API_KEY=your_anthropic_key
-ANTHROPIC_MODEL=your_available_claude_model_id
 GEMINI_API_KEY=your_google_key
-GEMINI_MODEL=gemini-3.6-flash
+GEMINI_MODEL=gemini-3.1-flash-lite
 ```
 
-Claude is tried first when its key and model are both configured. Missing
-configuration, SDK errors, and empty responses trigger Gemini. Failure of both
-providers returns a useful 503 response. Requests have a configurable 60-second timeout and
-SDK retries are disabled. Neither prompts nor raw SDK exceptions are logged.
-Gemini 3.6 uses minimal thinking by default for interactive latency and small
-translation/audit outputs. Adjust generation.gemini_thinking_level in config.yaml;
-when changing Gemini models, choose a thinking level that model supports.
-Generation temperature is passed to Gemini and to Anthropic SDK versions that
-expose that parameter; current Anthropic SDKs manage sampling without it.
+The backend initializes one Google GenAI client at startup and performs one model
+lookup to warm the connection (10-second deadline by default, no text generation).
+The same client and HTTP connection pool serve answers, translations, query
+rewrites, and audits until application shutdown. A failed startup check is logged;
+subsequent real requests can recover without rebuilding the client. Each new
+question and enabled translation/audit still requires an API request.
+
+Failures return an actionable 503 response. Gemini requests have a configurable
+60-second timeout, bounded application retries, and a cooldown after failure.
+No prompts, keys, or raw SDK exceptions are logged. Minimal thinking is configured
+for interactive latency; choose a supported level when changing models.
 Restart the backend after editing environment variables or config.yaml.
 
 The app can ingest English documents without an API key. Answer generation,
 non-English query normalization, and the default evidence audit need an available
-LLM. Provider calls can incur charges. Translation and audits use the same fallback.
+LLM. Provider calls can incur charges. Translation and audits reuse the same Gemini client.
 
 ## Use your documents
 
@@ -126,10 +131,10 @@ heuristics and can misclassify unfamiliar wording.
 | Multilingual normalization | translation.enabled and normalize_to_english |
 | Context and guardrails | request filters and guardrails flags |
 
-`rerank_input_limit` caps the merged candidate pool sent to the cross-encoder.
-It is an efficiency control, adjustable for ablation studies. The defaults
-retrieve up to 1000 candidates per retriever, rerank 200, retain 50, and send
-up to 8 to the LLM. Thresholds should be evaluated on your dataset.
+The default is BM25-only retrieval with reranking disabled: retrieve up to 1000
+candidates and send up to 8 to the LLM. When reranking is enabled,
+`rerank_input_limit` caps the candidate pool sent to the cross-encoder at 200,
+and `rerank_top_k` retains up to 50. Thresholds should be evaluated on your dataset.
 
 Chat requests accept exact metadata filters for `crop`, `topic`,
 `source_organization`, `publication_date`, `district`, and `organic_standard`.
@@ -183,7 +188,7 @@ Optional desktop/mobile browser checks using installed Microsoft Edge:
 Backend tests use a deterministic test-only embedder, LLM fixture, mongomock,
 and real FAISS. They test parsing, malformed uploads, safe XML, chunking,
 deduplication, lifecycle, persistence, corruption recovery, metadata filters,
-languages, guardrails, and provider fallback without paid requests.
+languages, guardrails, shared-client lifecycle, and bounded retries without paid requests.
 Frontend tests exercise real request construction and failure presentation.
 Test fixtures are explicitly synthetic and are never loaded as project data.
 
@@ -201,12 +206,33 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow and API contract.
   or start your existing MongoDB installation and correct MONGODB_URI.
   Health reports a degraded state until it connects.
 - **Missing model/key:** fill backend/.env; use the precise model ID available
-  to the relevant account. Gemini defaults to gemini-3.6-flash.
+  to the relevant account. Gemini defaults to gemini-3.1-flash-lite.
+- **LLM connection failures:** run `.\.venv\Scripts\python.exe scripts\check_llm.py`
+  from the project root to check the connection and send a tiny live Gemini request.
+  A 401/403 indicates a key/access problem; connection resets/refusals indicate
+  a network, firewall, VPN, or proxy problem; 504 indicates a generation timeout.
+  Check `HTTP_PROXY`/`HTTPS_PROXY` if a local proxy has stopped. The checker and
+  application logs omit API keys, prompts, and raw SDK error bodies.
+- **LLM timeouts/retries:** `generation.gemini_timeout_seconds` defaults to 60.
+  Transient errors retry up to `max_provider_attempts` (2 by default), with
+  exponential backoff and jitter. Failures cool down for
+  `provider_cooldown_seconds` (30 by default). Invalid credentials/parameters
+  are not retried. `connection_check_timeout_seconds` controls the one-time
+  startup lookup. `/api/health` returns cached LLM connection status without
+  contacting Gemini again; model availability does not guarantee generation success.
+- **Idle requests:** the UI refreshes connection state on load, window focus, and
+  reconnection. It does not poll health or documents while idle. The source library
+  polls only while document jobs are active and also offers manual Refresh.
+- **Gemini model availability:** if a model repeatedly times out, select another
+  model available to your account in `GEMINI_MODEL` and rerun the checker.
+  Restart the backend after changing `.env` or `config.yaml`.
 - **Model download failure:** check internet access. Weights are cached under
   `.runtime/models`; reindex the failed upload after connectivity is restored.
 - **Legacy parser unavailable:** install LibreOffice and set its executable
   path in SOFFICE_PATH. No conversion is reported as successful when unavailable.
-- **Port already in use:** stop the existing app on 8000/5173 before launching.
+- **Port already in use:** run `.\run.ps1 -Restart` to stop and relaunch this
+  project's servers on 8000/5173, including reloading `.env`. The launcher checks
+  process ownership and refuses to stop unrelated applications using those ports.
 - **Logs:** `.runtime/backend.err.log`, `.runtime/frontend.err.log`,
   `.runtime/mongo.log`, and `backend/logs/application.log`.
 

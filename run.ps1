@@ -1,4 +1,4 @@
-param([switch]$SmokeTest)
+param([switch]$SmokeTest, [switch]$Restart)
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $runtime = Join-Path $projectRoot '.runtime'
@@ -14,6 +14,59 @@ function Check-Exit([string]$Description) {
     if ($LASTEXITCODE -ne 0) { throw "$Description failed (exit $LASTEXITCODE)." }
 }
 function Quoted([string]$Value) { return '"' + $Value + '"' }
+function Get-DevServerListeners {
+    & netstat.exe -ano -p tcp | ForEach-Object {
+        if ($_ -match '^\s*TCP\s+\S+:(8000|5173)\s+\S+\s+LISTENING\s+(\d+)\s*$') {
+            [pscustomobject]@{ Port = [int]$Matches[1]; ProcessId = [int]$Matches[2] }
+        }
+    }
+}
+function Test-ProjectServer($Listener) {
+    $taskProcessId = $Listener.ProcessId
+    $projectPython = [regex]::Escape((Join-Path $projectRoot '.venv\Scripts\python.exe'))
+    $projectVite = [regex]::Escape((Join-Path $projectRoot 'frontend\node_modules\vite\bin\vite.js'))
+    # Windows venv Python launches a system-Python child that owns the socket.
+    # Check its parent too, but only while both processes are Uvicorn servers.
+    for ($level = 0; $level -lt 3 -and $taskProcessId; $level++) {
+        $taskProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$taskProcessId"
+        if (-not $taskProcess) { return $false }
+        $command = $taskProcess.CommandLine
+        if ($Listener.Port -eq 5173) {
+            return $taskProcess.Name -eq 'node.exe' -and $command -match $projectVite
+        }
+        if ($taskProcess.Name -ne 'python.exe' -or $command -notmatch '-m\s+uvicorn\s+main:app\b' -or
+                $command -notmatch '--port\s+8000\b') { return $false }
+        if ($command -match $projectPython) { return $true }
+        $taskProcessId = $taskProcess.ParentProcessId
+    }
+    return $false
+}
+function Resolve-DevServerPorts {
+    $listeners = @(Get-DevServerListeners)
+    if (-not $listeners.Count) { return }
+    $description = ($listeners | ForEach-Object { "port $($_.Port) (PID $($_.ProcessId))" }) -join ', '
+    if (-not $Restart) {
+        throw "Servers are already using $description. To reload this project's servers and .env, run .\run.ps1 -Restart."
+    }
+    # Validate every listener before stopping any process. Never stop another app.
+    foreach ($listener in $listeners) {
+        if (-not (Test-ProjectServer $listener)) {
+            throw "Port $($listener.Port) is used by PID $($listener.ProcessId), which cannot be verified as this project's server. Stop that app or free the port manually."
+        }
+    }
+    foreach ($listener in ($listeners | Sort-Object ProcessId -Unique)) {
+        # Recheck ownership immediately before stopping in case a process exited.
+        if (Test-ProjectServer $listener) {
+            Write-Host "Stopping project server on port $($listener.Port) (PID $($listener.ProcessId))."
+            Stop-Process -Id $listener.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        if (-not @(Get-DevServerListeners).Count) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    throw 'Ports 8000/5173 are still occupied after restart. Check the owning processes and try again.'
+}
 function Test-Database {
     try {
         & $python -c "import sys; sys.path.insert(0, 'backend'); from src.settings import Settings; from pymongo import MongoClient; s=Settings(); c=MongoClient(s.mongodb_uri,serverSelectionTimeoutMS=1000); c.admin.command('ping'); c.close()" 2>$null
@@ -41,7 +94,8 @@ try {
     }
     $envFile = Join-Path $projectRoot 'backend\.env'
     if (-not (Test-Path -LiteralPath $envFile)) { Copy-Item -LiteralPath 'backend\.env.example' -Destination $envFile }
-    & $python -c "import sys; sys.path.insert(0, 'backend'); from src.settings import Settings; s=Settings(); print('Claude primary configured.' if s.anthropic_api_key and s.anthropic_model else 'Claude is unconfigured: set ANTHROPIC_API_KEY and ANTHROPIC_MODEL in backend/.env.'); print('Gemini fallback configured.' if s.gemini_api_key else 'Gemini requires GEMINI_API_KEY in backend/.env.')"
+    & $python -c "import sys; sys.path.insert(0, 'backend'); from src.settings import Settings; s=Settings(); print('Gemini configured; connection initialized once at backend startup.' if s.llm_ready else 'Gemini requires GEMINI_API_KEY and GEMINI_MODEL in backend/.env.')"
+    Resolve-DevServerPorts
     if (-not (Test-Database)) {
         $mongod = Get-ChildItem -LiteralPath (Join-Path $runtime 'mongodb') -Filter mongod.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $mongod) {
@@ -69,8 +123,6 @@ try {
             Set-Content -LiteralPath $packageMarker -Value $packageHash
         }
     } finally { Pop-Location }
-    & $python -c "import socket; sockets=[]; [(sockets.append(socket.socket()), sockets[-1].bind(('127.0.0.1',p))) for p in (8000,5173)]; [s.close() for s in sockets]"
-    Check-Exit 'Backend/frontend port availability check'
     $backendProcess = Start-Process -FilePath $python -ArgumentList @('-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8000', '--workers', '1') -WorkingDirectory (Join-Path $projectRoot 'backend') -RedirectStandardOutput (Join-Path $runtime 'backend.out.log') -RedirectStandardError (Join-Path $runtime 'backend.err.log') -WindowStyle Hidden -PassThru
     $vite = Join-Path $projectRoot 'frontend\node_modules\vite\bin\vite.js'
     $frontendProcess = Start-Process -FilePath (Get-Command node).Source -ArgumentList @((Quoted $vite), '--host', '127.0.0.1', '--port', '5173', '--strictPort') -WorkingDirectory (Join-Path $projectRoot 'frontend') -RedirectStandardOutput (Join-Path $runtime 'frontend.out.log') -RedirectStandardError (Join-Path $runtime 'frontend.err.log') -WindowStyle Hidden -PassThru
@@ -78,7 +130,7 @@ try {
     Write-Host 'Frontend: http://localhost:5173'
     Write-Host 'Backend:  http://127.0.0.1:8000'
     Write-Host 'API docs: http://127.0.0.1:8000/docs'
-    Write-Host 'First document ingestion downloads the MPNet model; first retrieval downloads the reranker.'
+    Write-Host 'First document ingestion downloads MPNet; the reranker downloads only when reranking is enabled.'
     Write-Host 'Logs: .runtime and backend/logs. Press Ctrl+C here to stop.'
     if ($SmokeTest) {
         $webReady = $false

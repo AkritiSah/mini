@@ -30,6 +30,12 @@ class FixtureEmbedder:
 
 
 class FixtureLLM:
+    def initialize(self):
+        pass
+
+    def close(self):
+        pass
+
     def complete(self, prompt, system, max_tokens=None):
         if system.startswith('Audit'):
             answer = '{"supported": true}'

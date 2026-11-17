@@ -3,7 +3,6 @@ import Navbar from './components/Navbar';
 import ChatPage from './pages/ChatPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import { api } from './services/api';
-import { MapPin, Leaf } from 'lucide-react';
 
 export default function App() {
   const [page, setPage] = useState(location.hash === '#knowledge' ? 'knowledge' : 'chat');
@@ -21,22 +20,28 @@ export default function App() {
     async function refresh() {
       try {
         const state = await api.health();
-        if (active) { setHealth(state); setConnectionError(''); }
+        if (!active) return;
+        setHealth(state); setConnectionError('');
         const documents = await api.documents();
         if (active) setStats(documents);
       } catch (error) { if (active) { setConnectionError(error.message); setHealth(null); } }
     }
-    refresh(); const interval = setInterval(refresh, 10000);
-    return () => { active = false; clearInterval(interval); };
+    refresh();
+    window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+    };
   }, []);
   return <div className="app-shell">
     <Navbar page={page} health={health} />
     <main className="main-area">
-      <header className="topbar"><span><Leaf size={15}/> A little closer to nature.</span><span><MapPin size={14}/> Sikkim, India <i/> Local research prototype</span></header>
       {page === 'chat'
         ? <ChatPage health={health} connectionError={connectionError} stats={stats} messages={messages} setMessages={setMessages}/>
         : <KnowledgeBasePage onStats={setStats}/>}
-      <footer className="page-footer"><span>Rooted in evidence. Growing together.</span><span>Krishi Mitra <span className="footer-dot">•</span> Organic farming, informed.</span></footer>
+      <footer className="page-footer"><span>For the people who grow in Sikkim.</span><span>English / नेपाली / Romanized Nepali</span></footer>
     </main>
   </div>;
 }

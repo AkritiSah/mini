@@ -3,11 +3,11 @@ chunking:
   overlap_words: 75
   max_words: 500
 retrieval:
-  mode: hybrid
+  mode: bm25
   bm25_top_k: 1000
   faiss_top_k: 1000
   rrf_k: 60
-  rerank_enabled: true
+  rerank_enabled: false
   rerank_input_limit: 200
   rerank_top_k: 50
   context_top_k: 8
@@ -16,6 +16,11 @@ generation:
   temperature: 0.2
   max_output_tokens: 1500
   timeout_seconds: 60
+  gemini_timeout_seconds: 60
+  connection_check_timeout_seconds: 10
+  max_provider_attempts: 2
+  retry_initial_delay_seconds: 1
+  provider_cooldown_seconds: 30
   gemini_thinking_level: minimal
 translation:
   enabled: true

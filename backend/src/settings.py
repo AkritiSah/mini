@@ -9,10 +9,8 @@ ROOT = BACKEND.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BACKEND / '.env', extra='ignore')
-    anthropic_api_key: str = ''
-    anthropic_model: str = ''
     gemini_api_key: str = ''
-    gemini_model: str = 'gemini-3.6-flash'
+    gemini_model: str = 'gemini-3.1-flash-lite'
     mongodb_uri: str = 'mongodb://127.0.0.1:27017'
     mongodb_database: str = 'krishi_mitra'
     embedding_model: str = 'sentence-transformers/all-mpnet-base-v2'
@@ -27,7 +25,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_ready(self):
-        return bool((self.anthropic_api_key and self.anthropic_model) or self.gemini_api_key)
+        return bool(self.gemini_api_key and self.gemini_model)
 
 
 def load_config():
@@ -42,4 +40,14 @@ def load_config():
     for key in ('bm25_top_k', 'faiss_top_k', 'rerank_input_limit', 'rerank_top_k', 'context_top_k'):
         if retrieval[key] < 1:
             raise ValueError(f'{key} must be positive.')
+    generation = config['generation']
+    for key in ('timeout_seconds', 'gemini_timeout_seconds', 'connection_check_timeout_seconds'):
+        if generation.get(key, 60) <= 0:
+            raise ValueError(f'{key} must be positive.')
+    attempts = generation.get('max_provider_attempts', 2)
+    if type(attempts) is not int or not 1 <= attempts <= 3:
+        raise ValueError('max_provider_attempts must be an integer from 1 to 3.')
+    for key in ('retry_initial_delay_seconds', 'provider_cooldown_seconds'):
+        if generation.get(key, 0) < 0:
+            raise ValueError(f'{key} cannot be negative.')
     return config

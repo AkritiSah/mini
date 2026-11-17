@@ -35,6 +35,7 @@ class Application:
         with self.lock:
             if self.initialized:
                 return
+            self.llm.initialize()
             self.repo.db.command('ping')
             self.repo.initialize()
             # A stopped ingestion cannot be reported as indexed on restart.
@@ -61,5 +62,8 @@ class Application:
         return chunks
 
     def close(self):
-        if self.client is not None:
-            self.client.close()
+        try:
+            self.llm.close()
+        finally:
+            if self.client is not None:
+                self.client.close()
