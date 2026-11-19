@@ -96,10 +96,6 @@ export default function ChatPage({ health, connectionError, stats, messages, set
               <img src="/images/darap-farm.jpg" alt="Maize fields and a rural home beneath misty forested hills in Darap, Sikkim" width="1280" height="850" fetchPriority="high"/>
               <figcaption>
                 <span><MapPin size={14}/> Darap, West Sikkim</span>
-                <small>
-                  Photo: <a href="https://commons.wikimedia.org/wiki/File:Agriculture_farm_in_Darap_Sikkim_India.jpg" target="_blank" rel="noreferrer">Sharada Prasad CS</a>
-                  {' / '}<a href="https://creativecommons.org/licenses/by/2.0/" target="_blank" rel="noreferrer">CC BY 2.0</a>
-                </small>
               </figcaption>
             </figure>
           )}

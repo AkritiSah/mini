@@ -77,8 +77,6 @@ svg { flex-shrink: 0; vertical-align: middle; }
 .field-photo img { display: block; width: 100%; height: 345px; object-fit: cover; object-position: 40% 55%; border-radius: 3px 18px 3px 3px; background: var(--soft); }
 .field-photo figcaption { padding: 12px 0 0; color: var(--muted); }
 .field-photo figcaption > span { display: flex; align-items: center; gap: 5px; font-size: 13px; }
-.field-photo figcaption small { display: block; font-size: 11px; margin-top: 5px; line-height: 1.5; }
-.field-photo figcaption a { text-decoration: underline; text-underline-offset: 2px; }
 .source-summary { padding-top: 26px; margin-top: 25px; border-top: 1px solid #cfdcd2; }
 .source-summary h2 { display: flex; align-items: center; gap: 9px; font-size: 19px; font-weight: 600; }
 .source-summary > p { font-size: 15px; line-height: 1.65; color: var(--muted); max-width: 38ch; margin-top: 12px; }
