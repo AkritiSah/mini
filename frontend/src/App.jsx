@@ -18,13 +18,20 @@ export default function App() {
   useEffect(() => {
     let active = true;
     async function refresh() {
+      let failure = '';
       try {
         const state = await api.health();
         if (!active) return;
-        setHealth(state); setConnectionError('');
+        setHealth(state);
+      } catch (error) {
+        failure = error.message;
+        if (active) setHealth(null);
+      }
+      try {
         const documents = await api.documents();
         if (active) setStats(documents);
-      } catch (error) { if (active) { setConnectionError(error.message); setHealth(null); } }
+      } catch (error) { failure ||= error.message; }
+      if (active) setConnectionError(failure);
     }
     refresh();
     window.addEventListener('focus', refresh);

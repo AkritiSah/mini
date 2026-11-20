@@ -47,7 +47,15 @@ def load_config():
     attempts = generation.get('max_provider_attempts', 2)
     if type(attempts) is not int or not 1 <= attempts <= 3:
         raise ValueError('max_provider_attempts must be an integer from 1 to 3.')
-    for key in ('retry_initial_delay_seconds', 'provider_cooldown_seconds'):
+    for key in ('retry_initial_delay_seconds', 'provider_cooldown_seconds',
+                'rate_limit_retry_seconds', 'max_retry_wait_seconds'):
         if generation.get(key, 0) < 0:
             raise ValueError(f'{key} cannot be negative.')
+    if not 0 <= config['translation'].get('document_request_interval_seconds', 12) <= 60:
+        raise ValueError('document_request_interval_seconds must be between 0 and 60.')
+    ocr = config.get('ocr', {})
+    if type(ocr.get('dpi', 250)) is not int or not 100 <= ocr.get('dpi', 250) <= 400:
+        raise ValueError('ocr.dpi must be an integer between 100 and 400.')
+    if any(language not in {'eng', 'nep'} for language in ocr.get('languages', 'eng+nep').split('+')):
+        raise ValueError('ocr.languages supports eng, nep, or eng+nep.')
     return config

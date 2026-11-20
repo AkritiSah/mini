@@ -49,22 +49,48 @@ def html_text(content):
     return soup.get_text('\n', strip=True)
 
 
-def parse(path: Path, soffice_path='') -> list[Section]:
+def parse(path: Path, soffice_path='', ocr_config=None, on_page=None) -> list[Section]:
     suffix = path.suffix.lower()
     if suffix == '.pdf':
         import pymupdf
+        from .ocr import ensure_models, read_page
+        ocr_config = ocr_config or {}
+        tessdata = None
         with pymupdf.open(path) as document:
             if document.needs_pass:
                 raise ValueError('Password-protected PDFs are not supported.')
             sections = []
             for i, page in enumerate(document):
                 text = page.get_text(sort=True)
-                tables = page.find_tables().tables
-                for table in tables:
-                    text += '\n\n' + table_text(table.extract())
+                # Scan pages can contain only a digital page number or heading.
+                # Process them individually so mixed PDFs keep their scanned pages.
+                letters = sum(character.isalpha() for character in text)
+                images = page.get_image_info() if letters < 80 else []
+                large_scan = any(pymupdf.Rect(image['bbox']).get_area() >= page.rect.get_area() * .5
+                                 for image in images)
+                needs_ocr = (letters < 80 and large_scan) or (
+                    letters < 20 and (bool(images) or bool(page.get_drawings())))
+                used_ocr = False
+                if needs_ocr:
+                    if not ocr_config.get('enabled', True):
+                        raise ValueError(f'PDF page {i + 1} requires OCR. Enable ocr.enabled and reindex this document.')
+                    languages = ocr_config.get('languages', 'eng+nep')
+                    if tessdata is None:
+                        tessdata = ensure_models(languages)
+                    if on_page:
+                        on_page(i, len(document), True)
+                    text = read_page(page, languages=languages, dpi=ocr_config.get('dpi', 250), tessdata=tessdata)
+                    used_ocr = True
+                else:
+                    tables = page.find_tables().tables
+                    for table in tables:
+                        text += '\n\n' + table_text(table.extract())
                 sections.append(Section(text, i + 1))
+                if on_page:
+                    on_page(i + 1, len(document), used_ocr)
             if not any(len(s.text.strip()) > 20 for s in sections):
-                raise ValueError('This PDF has no usable text. OCR is required before upload.')
+                raise ValueError('This PDF has no readable text, including after any OCR. '
+                                 'Check that the pages contain clear, legible writing.')
             return sections
     if suffix in {'.txt', '.md'}:
         return [Section(read_text(path))]
@@ -148,5 +174,5 @@ def parse(path: Path, soffice_path='') -> list[Section]:
             converted = Path(directory, path.stem + '.' + target)
             if not converted.exists():
                 raise ValueError('LibreOffice could not convert this document.')
-            return parse(converted)
+            return parse(converted, ocr_config=ocr_config, on_page=on_page)
     raise ValueError('No parser is available for this format.')

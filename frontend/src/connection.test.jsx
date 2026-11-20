@@ -50,3 +50,25 @@ test('library polling stops once active indexing finishes', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
   expect(api.documents).toHaveBeenCalledTimes(2);
 });
+
+test('library keeps polling after a temporary fetch failure', async () => {
+  const document = { id: 'doc', title: 'Guide', filename: 'guide.txt', uploaded_at: '2026-11-17' };
+  api.documents.mockResolvedValueOnce({ documents: [{ ...document, status: 'processing' }], document_count: 1, chunk_count: 0 })
+    .mockRejectedValueOnce(new Error('Temporary connection failure'))
+    .mockResolvedValue({ documents: [{ ...document, status: 'indexed' }], document_count: 1, chunk_count: 1 });
+  render(<KnowledgeBasePage onStats={vi.fn()}/>);
+  await act(async () => {});
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(screen.getByRole('alert')).toHaveTextContent('Temporary connection failure');
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(api.documents).toHaveBeenCalledTimes(3);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByText('indexed')).toBeInTheDocument();
+});
+
+test('source library is fetched even when search health is degraded', async () => {
+  api.health.mockRejectedValue(new Error('Search index is unavailable'));
+  render(<App/>);
+  await act(async () => {});
+  expect(api.documents).toHaveBeenCalledTimes(1);
+});

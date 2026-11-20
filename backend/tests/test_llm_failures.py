@@ -92,3 +92,82 @@ def test_retry_budget_is_bounded(monkeypatch):
     with pytest.raises(LLMUnavailable, match='HTTP 504: request timed out'):
         llm.complete('prompt', 'system')
     assert fallback.call_count == 2
+
+
+def quota_error(*, delay=None, quota_id=None, value=None):
+    from google.genai.errors import ClientError
+    details = []
+    if delay is not None:
+        details.append({'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': delay})
+    if quota_id is not None:
+        details.append({'@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                        'violations': [{'quotaId': quota_id, 'quotaValue': value}]})
+    return ClientError(429, {'error': {'message': 'private API key must not be logged',
+                                     'details': details}})
+
+
+def test_rate_limit_honors_provider_retry_delay(monkeypatch, caplog):
+    llm = client()
+    generate = Mock(side_effect=[quota_error(delay='45.5s'), 'recovered'])
+    sleep = Mock()
+    monkeypatch.setattr(llm, '_gemini', generate)
+    monkeypatch.setattr(llm_client.time, 'sleep', sleep)
+    monkeypatch.setattr(llm_client.random, 'uniform', lambda *args: 0)
+    with caplog.at_level(logging.WARNING, logger='krishi'):
+        assert llm.complete('private prompt', 'system').text == 'recovered'
+    sleep.assert_called_once_with(45.5)
+    assert 'retry_after_seconds=45.5' in caplog.text
+    assert 'private' not in caplog.text
+
+
+def test_rate_limit_without_hint_uses_longer_backoff(monkeypatch):
+    llm = client()
+    monkeypatch.setattr(llm, '_gemini', Mock(side_effect=[http_error(429), 'recovered']))
+    sleep = Mock()
+    monkeypatch.setattr(llm_client.time, 'sleep', sleep)
+    monkeypatch.setattr(llm_client.random, 'uniform', lambda *args: 0)
+    assert llm.complete('prompt', 'system').text == 'recovered'
+    sleep.assert_called_once_with(30)
+
+
+@pytest.mark.parametrize('quota_id,value', [
+    ('GenerateRequestsPerDayPerProjectPerModel-FreeTier', '20'),
+    ('GenerateRequestsPerMinutePerProjectPerModel-FreeTier', '0'),
+])
+def test_exhausted_quota_is_not_retried(monkeypatch, quota_id, value):
+    llm = client()
+    generate = Mock(side_effect=quota_error(delay='45s', quota_id=quota_id, value=value))
+    sleep = Mock()
+    monkeypatch.setattr(llm, '_gemini', generate)
+    monkeypatch.setattr(llm_client.time, 'sleep', sleep)
+    with pytest.raises(LLMUnavailable, match='daily quota exhausted or quota limit is zero') as failure:
+        llm.complete('prompt', 'system')
+    assert failure.value.category == 'quota_exhausted'
+    assert 'private' not in str(failure.value)
+    generate.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_long_retry_hint_is_preserved_without_blocking_worker(monkeypatch):
+    llm = client()
+    generate = Mock(side_effect=quota_error(delay='3600s'))
+    monkeypatch.setattr(llm, '_gemini', generate)
+    sleep = Mock()
+    monkeypatch.setattr(llm_client.time, 'sleep', sleep)
+    with pytest.raises(LLMUnavailable, match='3600 seconds') as failure:
+        llm.complete('prompt', 'system')
+    assert failure.value.retry_after == 3600
+    with pytest.raises(LLMUnavailable, match='cooling down'):
+        llm.complete('next prompt', 'system')
+    generate.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_retry_after_header_and_malformed_hints():
+    from types import SimpleNamespace
+    error = quota_error(delay='12s')
+    error.response = SimpleNamespace(headers={'Retry-After': '48'})
+    assert failure_details(error)['retry_after_seconds'] == 48
+    for value in ('invalid', '-1s', 'NaNs', 'infs'):
+        error = quota_error(delay=value)
+        assert failure_details(error)['retry_after_seconds'] is None

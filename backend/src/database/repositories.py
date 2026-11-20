@@ -9,6 +9,7 @@ class Repository:
         self.db.documents.create_index([('file_hash', ASCENDING)], unique=True)
         self.db.chunks.create_index('document_id')
         self.db.ingestion_jobs.create_index('document_id')
+        self.db.translation_cache.create_index('document_id')
 
     def document(self, document_id):
         return self.db.documents.find_one({'_id': document_id})

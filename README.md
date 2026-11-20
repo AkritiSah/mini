@@ -89,7 +89,7 @@ evidence instead of supplying general model knowledge.
 
 | Format | Processing |
 | --- | --- |
-| PDF | PyMuPDF, page metadata; scanned/empty PDFs report that OCR is required |
+| PDF | PyMuPDF with page metadata and local English/Nepali OCR for scanned pages |
 | TXT / MD | UTF-8 or UTF-16 text |
 | HTML / HTM | BeautifulSoup; scripts/styles excluded |
 | CSV | Headings are attached to row values |
@@ -106,7 +106,18 @@ signatures, archive expansion, unsafe paths, and macro-bearing modern Office
 archives are checked. Legacy files are converted with a separate headless
 LibreOffice profile. No uploaded file is served as executable web content.
 Complex charts, merged cells, scanned tables, and irregular layouts may require
-manual cleanup. OCR is reported as a requirement, not silently simulated.
+manual cleanup. Scanned PDF pages use local OCR through PyMuPDF's bundled
+Tesseract support. The first scan downloads checksum-verified English/Nepali
+language files (about 5 MB) into `.runtime/tessdata`; subsequent scans work
+offline for text extraction. To prepare them ahead of time, run
+`.\.venv\Scripts\python.exe scripts\setup_ocr.py` from the project root.
+`ocr.enabled`, `ocr.languages` (`eng+nep`), and `ocr.dpi` (250) are configurable
+in `backend/config.yaml`. Existing digital text is retained; OCR page numbers
+remain available for citations, and upload progress reports the OCR stage.
+Blank or unreadable documents still fail. OCR may misread poor scans, numbers,
+and tables, so compare important passages with the original. Nepali-to-English
+normalization after OCR still uses Gemini and its quota. Reindex an existing
+failed source to run OCR without uploading a duplicate.
 
 ## Configuration and experiments
 
@@ -117,10 +128,29 @@ Small tables are kept together. Original source text is always preserved.
 
 MPNet is English oriented. Nepali/mixed documents require
 `translation.translate_documents: true`; otherwise ingestion returns an
-actionable error instead of silently embedding them as English. This defaults
-to false because translating books may be expensive. Queries are normalized
-by default. Language detection and the scope classifier are lightweight
-heuristics and can misclassify unfamiliar wording.
+actionable error instead of silently embedding them as English. Document
+translation is enabled by default, as is query normalization. Original passages
+remain unchanged for citations; translated English text is used for retrieval.
+Translating books makes Gemini requests for non-English chunks and may take
+several minutes. Document translation requests are spaced at least 12 seconds
+apart (`translation.document_request_interval_seconds`); adjust this to your
+project's actual Gemini limits. Successful translations are saved in MongoDB
+and reused on reindex, including after a failed upload or backend restart.
+Original source text and verification status are preserved.
+After changing this setting, restart the backend and reindex
+any previously failed document from the source library; uploading the same file
+again is rejected as a duplicate. Language detection and the scope classifier
+are lightweight heuristics and can misclassify unfamiliar wording.
+
+If an upload fails with **HTTP 429**, Gemini has reached a project request,
+token, or quota limit. Check [your active limits in Google AI Studio](https://aistudio.google.com/rate-limit).
+The client honors provider retry hints, uses a 30-second minimum backoff for
+429 responses, and waits no more than 60 seconds within a retry. Longer retry
+hints become a cooldown. Structured daily-quota and zero-limit errors stop
+without immediate retries and require quota reset or an account change.
+No local setting can increase the provider's quota. Once the limit is resolved,
+use **Reindex** on the existing source to resume saved translations. Failed
+jobs show the actual progress reached rather than reporting 100% completion.
 
 | Experiment | Configuration |
 | --- | --- |

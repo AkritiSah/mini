@@ -3,8 +3,8 @@ import re
 from .parsers import Section, parse
 
 
-def load_sections(path, soffice_path=''):
-    sections = parse(path, soffice_path)
+def load_sections(path, soffice_path='', ocr_config=None, on_page=None):
+    sections = parse(path, soffice_path, ocr_config, on_page)
     # Only recognizable page furniture is removable. Repeated advice stays verbatim.
     edges = Counter()
     furniture = re.compile(r'^(?:page\s*)?\d+(?:\s*(?:of|/)\s*\d+)?$|'

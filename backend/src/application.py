@@ -32,6 +32,8 @@ class Application:
         self.index_ready = False
 
     def initialize(self):
+        if self.initialized:
+            return
         with self.lock:
             if self.initialized:
                 return

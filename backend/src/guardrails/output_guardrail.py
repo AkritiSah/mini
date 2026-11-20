@@ -4,7 +4,8 @@ from src.translation.translator import detect_language
 
 
 def citation_ids(answer):
-    return set(int(number) for number in re.findall(r'\[(\d+)\]', answer))
+    groups = re.findall(r'\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]', answer)
+    return {int(number) for group in groups for number in re.findall(r'\d+', group)}
 
 
 def validate_answer(answer, chunks, language, llm=None):

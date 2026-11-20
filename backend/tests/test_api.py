@@ -43,6 +43,20 @@ def test_duplicate_malformed_and_unsafe_upload(client):
     assert upload(client, source_url='javascript:alert(1)').status_code == 400
 
 
+def test_english_document_with_bilingual_header_is_indexed_and_cited(client):
+    content = ('(मध्य भारती) English farming research. Organic ginger cultivation uses compost '
+               'for soil health. Rishi kheti is a traditional farming method.').encode('utf-8')
+    uploaded = upload(client, 'research.txt', content, title='Organic ginger research').json()
+    job = client.get('/api/jobs/' + uploaded['job_id']).json()
+    assert job['status'] == 'completed'
+    result = client.post('/api/chat', json={'question': 'How do I grow organic ginger?'}).json()
+    assert result['evidence_status'] == 'supported'
+    citation = result['citations'][0]
+    assert citation['document_id'] == uploaded['document_id']
+    source = client.get('/api/sources/' + citation['chunk_id']).json()
+    assert source['original_text'].split() == content.decode('utf-8').split()
+
+
 def test_pdf_ingestion_and_scan_error(client):
     with pymupdf.open() as document:
         document.new_page().insert_text((50, 50), 'Organic ginger farming uses compost for soil health.')
@@ -75,6 +89,80 @@ def test_forged_citation_is_not_returned(client, application, monkeypatch):
     monkeypatch.setattr(application.llm, 'complete', lambda *a, **kw: Completion('Use synthetic fertilizer. [999]', 'fixture', 'fixture'))
     answer = client.post('/api/chat', json={'question': 'How do I grow organic ginger?'}).json()
     assert answer['evidence_status'] == 'insufficient' and answer['citations'] == []
+
+
+def test_grouped_citations_include_all_referenced_documents(client, application, monkeypatch):
+    upload(client, 'guide.txt', b'Organic ginger cultivation. Use compost before planting.')
+    upload(client, 'mulch.txt', b'Organic ginger cultivation. Use organic mulch after planting.')
+    from src.llm.llm_client import Completion
+    def complete(prompt, system, **kwargs):
+        answer = '{"supported": true}' if system.startswith('Audit') else 'Use compost and organic mulch [1, 2].'
+        return Completion(answer, 'fixture', 'fixture')
+    monkeypatch.setattr(application.llm, 'complete', complete)
+    result = client.post('/api/chat', json={'question': 'How do I grow organic ginger?'}).json()
+    assert result['evidence_status'] == 'supported'
+    assert {c['id'] for c in result['citations']} == {1, 2}
+    assert len({c['document_id'] for c in result['citations']}) == 2
+    for citation in result['citations']:
+        assert client.get('/api/sources/' + citation['chunk_id']).status_code == 200
+        assert client.get('/api/documents/' + citation['document_id'] + '/file').status_code == 200
+
+
+def test_existing_sources_remain_available_during_embedding(client, application, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    assert upload(client).status_code == 202
+    started, release = Event(), Event()
+    encode = application.embedder.encode
+    def paused_encode(texts):
+        started.set()
+        if not release.wait(10):
+            raise RuntimeError('Test did not release embedding')
+        return encode(texts)
+    monkeypatch.setattr(application.embedder, 'encode', paused_encode)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(upload, client, 'next.txt', b'Organic rice cultivation requires irrigation.')
+        try:
+            assert started.wait(5)
+            library = pool.submit(client.get, '/api/documents').result(timeout=3)
+            assert library.status_code == 200
+            assert any(doc['status'] == 'processing' for doc in library.json()['documents'])
+            answer = pool.submit(client.post, '/api/chat', json={'question': 'How do I grow organic ginger?'}).result(timeout=3)
+            assert answer.json()['evidence_status'] == 'supported'
+            assert len(answer.json()['citations']) == 1
+        finally:
+            release.set()
+        assert pending.result(timeout=5).status_code == 202
+    assert application.repo.db.documents.count_documents({'status': 'indexed'}) == 2
+    assert application.vectors.index.ntotal == 2
+
+
+def test_deleting_during_embedding_does_not_restore_document(client, application, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from pathlib import Path
+    started, release = Event(), Event()
+    encode = application.embedder.encode
+    def paused_encode(texts):
+        started.set()
+        if not release.wait(10):
+            raise RuntimeError('Test did not release embedding')
+        return encode(texts)
+    monkeypatch.setattr(application.embedder, 'encode', paused_encode)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(upload, client)
+        try:
+            assert started.wait(5)
+            doc = application.repo.db.documents.find_one({'filename': 'guide.txt'})
+            deleted = pool.submit(client.delete, '/api/documents/' + doc['_id']).result(timeout=3)
+            assert deleted.status_code == 200
+        finally:
+            release.set()
+        assert pending.result(timeout=5).status_code == 202
+    assert application.repo.db.documents.count_documents({}) == 0
+    assert application.repo.db.chunks.count_documents({}) == 0
+    assert application.repo.db.ingestion_jobs.count_documents({}) == 0
+    assert not Path(doc['local_path']).exists()
 
 
 def test_health_reads_cached_gemini_connection_without_rechecking(client, application, monkeypatch):

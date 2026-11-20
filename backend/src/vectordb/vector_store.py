@@ -43,14 +43,15 @@ class VectorStore:
             # MongoDB remains authoritative; ensure() rebuilds a corrupt snapshot.
             self.index, self.entries = None, []
 
-    def ensure(self, chunks, force=False):
+    def ensure(self, chunks, force=False, *, precomputed=None):
         desired = signatures(chunks)
         if desired == self.entries and not force:
             return
         cached = {entry: self.index.reconstruct(i) for i, entry in enumerate(self.entries)} if self.index is not None and not force else {}
-        missing = [i for i, entry in enumerate(desired) if entry not in cached]
+        additions = dict(precomputed or {})
+        missing = [i for i, entry in enumerate(desired) if entry not in cached and entry not in additions]
         new_vectors = self.embedder.encode([chunks[i]['retrieval_text_en'] for i in missing]) if missing else []
-        additions = dict(zip((desired[i] for i in missing), new_vectors))
+        additions.update(zip((desired[i] for i in missing), new_vectors))
         vectors = [cached[entry] if entry in cached else additions[entry] for entry in desired]
         dimension = len(vectors[0]) if vectors else (self.index.d if self.index is not None else 768)
         index = faiss.IndexFlatIP(dimension)

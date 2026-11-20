@@ -1,3 +1,7 @@
+ocr:
+  enabled: true
+  languages: eng+nep
+  dpi: 250
 chunking:
   target_words: 400
   overlap_words: 75
@@ -20,12 +24,15 @@ generation:
   connection_check_timeout_seconds: 10
   max_provider_attempts: 2
   retry_initial_delay_seconds: 1
+  rate_limit_retry_seconds: 30
+  max_retry_wait_seconds: 60
   provider_cooldown_seconds: 30
   gemini_thinking_level: minimal
 translation:
   enabled: true
   normalize_to_english: true
-  translate_documents: false
+  translate_documents: true
+  document_request_interval_seconds: 12
 guardrails:
   enforce_farming_scope: true
   verify_citations: true
